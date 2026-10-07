@@ -32,25 +32,44 @@ public with sharing class ContactSyncClient {
     @TestVisible private static ApiConfig__mdt configOverride;
 
     /**
-     * Envoie les statuts à l'API, par lots de ChunkSize__c éléments.
+     * Envoie tous les statuts à l'API, par lots de ChunkSize__c éléments.
      * @throws SyncException si la configuration est invalide ou si l'API ne répond pas 200
      */
     public static void sync(List<ContactStatus> statuses) {
+        sync(statuses, null);
+    }
+
+    /**
+     * Envoie les statuts par lots, en s'arrêtant après maxCallouts appels (null = pas de limite).
+     * Sert à respecter la limite de 100 callouts par transaction : l'appelant récupère le nombre
+     * de statuts envoyés et traite le reste dans une autre transaction.
+     * @return le nombre de statuts envoyés, en partant du début de la liste
+     * @throws SyncException si la configuration est invalide ou si l'API ne répond pas 200
+     */
+    public static Integer sync(List<ContactStatus> statuses, Integer maxCallouts) {
         if (statuses.isEmpty()) {
-            return;
+            return 0;
         }
         ApiConfig__mdt config = getConfig();
         Integer chunkSize = Integer.valueOf(config.ChunkSize__c);
 
+        Integer sent = 0;
+        Integer callouts = 0;
         // Découpage en lots : i = début du lot, upperBound = fin (exclue) du lot.
         for (Integer i = 0; i < statuses.size(); i += chunkSize) {
+            if (maxCallouts != null && callouts >= maxCallouts) {
+                break; // Limite atteinte : le reste sera traité par l'appelant.
+            }
             List<ContactStatus> chunk = new List<ContactStatus>();
             Integer upperBound = Math.min(i + chunkSize, statuses.size());
             for (Integer j = i; j < upperBound; j++) {
                 chunk.add(statuses[j]);
             }
             send(chunk, config);
+            callouts++;
+            sent = upperBound;
         }
+        return sent;
     }
 
     /** Un appel PATCH pour un lot. Lève SyncException si le code de retour n'est pas 200. */
