@@ -86,6 +86,69 @@ AccountTriggerHandler
 | `classes/ContactSyncQueueableTest` | Tests de la limite de callouts et des traces |
 | `classes/ContactSyncMock` | Faux serveur HTTP pour les tests |
 
+### Détail de chaque classe
+
+#### `AccountTrigger` (trigger)
+
+Se déclenche avant et après chaque mise à jour d'un `Account`. Il ne contient aucune règle métier : il appelle `AccountTriggerHandler.beforeUpdate` ou `afterUpdate` selon le moment, en lui passant les nouvelles valeurs (`Trigger.new`) et les anciennes (`Trigger.oldMap`). Garder le trigger vide permet de tester la logique dans des classes normales.
+
+#### `AccountTriggerHandler`
+
+Chef d'orchestre. Il décide **quels comptes sont concernés** et enchaîne les étapes.
+
+| Méthode | Rôle |
+| --- | --- |
+| `beforeUpdate` | Étape a : pour chaque compte qui vient de passer à `canceled`, renseigne `MissionCanceledDate__c` avec la date du jour. Aucun DML : Salesforce enregistre la modification lui-même |
+| `afterUpdate` | Étapes b et c : demande à `ContactStatusService` de désactiver les contacts, puis lance un `ContactSyncQueueable` avec les contacts réellement modifiés. Ne fait rien si aucun compte n'est concerné ou si aucun contact n'a changé |
+| `getNewlyCanceled` (privée) | Compare l'ancienne et la nouvelle valeur de `MissionStatus__c` et ne garde que les comptes qui **passent** à `canceled`. C'est ce qui évite de retraiter un compte déjà annulé |
+
+#### `ContactStatusService`
+
+Contient la **règle métier sur les contacts** (étape b). Classe `without sharing` : la règle doit s'appliquer quels que soient les droits de visibilité de l'utilisateur.
+
+| Méthode | Rôle |
+| --- | --- |
+| `deactivateContactsWithoutActiveMission` | Reçoit les Id des comptes annulés, récupère leurs contacts encore actifs en **une seule requête**, les passe à `IsActive__c = false` et renvoie la liste de ceux qui ont été modifiés. C'est ici que se situe le contournement `AccountContactRelation` (voir section 2) |
+| `updateAndKeepSucceeded` (privée) | Met à jour les contacts en DML partielle (`allOrNone = false`) : l'échec d'un contact ne bloque pas les autres. Ne renvoie que ceux qui ont vraiment été enregistrés, pour ne synchroniser avec l'API que des statuts existant dans Salesforce. Les échecs sont écrits dans le log de débogage |
+
+#### `ContactSyncQueueable`
+
+Réalise la **synchronisation asynchrone** avec l'API (étape c) et gère tout ce qui peut mal tourner. C'est la classe la plus riche.
+
+| Élément | Rôle |
+| --- | --- |
+| Constructeur public | Reçoit les contacts modifiés et les convertit en `{ id, is_active }`, le format attendu par l'API. Premier essai |
+| `execute` | Point d'entrée du job. Attache le `Finalizer`, envoie les contacts dans la limite de callouts, écrit la trace `SUCCESS`, et ré-enfile un nouveau job s'il reste des contacts |
+| `sendWithinLimits` (privée) | Envoie au plus 90 appels (`MAX_CALLOUTS_PER_JOB`) et renvoie les contacts non envoyés. Respecte la limite Salesforce de 100 callouts par transaction |
+| `log` (privée) | Écrit une ligne dans `ContactSyncLog__c` (statut, nombre de contacts, tentative, message d'erreur). L'écriture ne fait jamais échouer la synchronisation |
+| `SyncFinalizer` (classe interne) | Exécuté après le job, même en cas d'exception. En cas d'échec : trace `RETRY` et nouveau job avec une minute d'attente, ou trace `FAILED` après `MAX_ATTEMPTS` (3) essais. Il est nécessaire car dans le job l'exception annulerait l'écriture du log |
+
+#### `ContactSyncClient`
+
+Client HTTP : il ne connaît que l'API, rien du métier Salesforce.
+
+| Élément | Rôle |
+| --- | --- |
+| `ContactStatus` (classe interne) | Un élément du corps JSON : `id` et `is_active`. Les noms sont ceux de l'API |
+| `sync(statuses)` | Envoie tous les statuts, par lots |
+| `sync(statuses, maxCallouts)` | Idem, mais s'arrête après `maxCallouts` appels et renvoie le nombre de statuts envoyés. Utilisé par le job pour respecter la limite de callouts |
+| `send` (privée) | Un appel `PATCH` pour un lot, par le Named Credential `ContactSyncApi`. Lève une `SyncException` si le code de retour n'est pas 200 |
+| `getConfig` (privée) | Lit `ApiConfig__mdt.ContactSync` et vérifie que la taille de lot et le timeout sont valides |
+| `SyncException` | Erreur levée si la configuration est invalide ou si l'API répond autre chose que 200 |
+
+#### `MissionConstants`
+
+Les deux valeurs de la picklist `MissionStatus__c` (`active`, `canceled`) sous forme de constantes, pour ne jamais les écrire en dur ailleurs dans le code.
+
+#### Classes de test
+
+| Classe | Rôle |
+| --- | --- |
+| `AccountTriggerTest` | Teste le parcours complet, du changement du compte à l'appel API (mocké). Crée 200 comptes avec un contact chacun |
+| `ContactSyncClientTest` | Teste le client HTTP seul : découpage en lots, utilisation du Named Credential, erreurs de l'API, configuration invalide |
+| `ContactSyncQueueableTest` | Teste la limite de callouts (90 envoyés, le reste rendu) et l'écriture des traces |
+| `ContactSyncMock` | Ne teste rien : c'est le faux serveur HTTP partagé par les tests. Salesforce interdit les vrais appels réseau en test. Il répond avec le code voulu et mémorise la dernière requête reçue (méthode, URL, corps) pour que les tests la vérifient |
+
 ## 4. Choix techniques
 
 - **Date en `before update`** : on modifie directement les comptes en mémoire, sans DML supplémentaire.
