@@ -54,18 +54,18 @@ private class ContactSyncQueueableTest {
         Test.stopTest();
 
         ContactSyncLog__c log = [SELECT Status__c, ContactCount__c, Attempt__c FROM ContactSyncLog__c];
-        Assert.areEqual(ContactSyncLogger.SUCCESS, log.Status__c);
+        Assert.areEqual(ContactSyncQueueable.SUCCESS, log.Status__c);
         Assert.areEqual(1, log.ContactCount__c);
         Assert.areEqual(1, log.Attempt__c);
     }
 
-    // Le logger enregistre le statut, la tentative et le message d'erreur.
+    // La trace enregistre le statut, la tentative et le message d'erreur.
     @IsTest
-    static void logger_storesFailureDetails() {
-        ContactSyncLogger.log(ContactSyncLogger.FAILED, 5, 3, 'API sync contacts : HTTP 401');
+    static void log_storesFailureDetails() {
+        ContactSyncQueueable.log(ContactSyncQueueable.FAILED, 5, 3, 'API sync contacts : HTTP 401');
 
         ContactSyncLog__c log = [SELECT Status__c, ContactCount__c, Attempt__c, ErrorMessage__c FROM ContactSyncLog__c];
-        Assert.areEqual(ContactSyncLogger.FAILED, log.Status__c);
+        Assert.areEqual(ContactSyncQueueable.FAILED, log.Status__c);
         Assert.areEqual(5, log.ContactCount__c);
         Assert.areEqual(3, log.Attempt__c);
         Assert.isTrue(log.ErrorMessage__c.contains('401'));

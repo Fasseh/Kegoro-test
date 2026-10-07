@@ -70,7 +70,7 @@ AccountTriggerHandler
           |-- ContactStatusService ..... désactive les contacts (un SOQL, un DML)
           '-- ContactSyncQueueable ..... job asynchrone (callout)
                  |-- ContactSyncClient ... appels HTTP par lots (Named Credential)
-                 '-- ContactSyncLogger ... trace dans ContactSyncLog__c
+                 '-- log() ................. trace dans ContactSyncLog__c
 ```
 
 | Fichier | Rôle |
@@ -78,9 +78,8 @@ AccountTriggerHandler
 | `triggers/AccountTrigger` | Point d'entrée (before/after update). Délègue tout au handler |
 | `classes/AccountTriggerHandler` | Détecte les comptes qui passent à `canceled`, pose la date, lance la désactivation puis la synchronisation |
 | `classes/ContactStatusService` | Désactive les contacts. DML partielle : une erreur sur un contact n'empêche pas les autres |
-| `classes/ContactSyncQueueable` | Job asynchrone. Envoie par tranches de 90 appels max, se ré-enfile pour le reste, relance en cas d'échec |
+| `classes/ContactSyncQueueable` | Job asynchrone. Envoie par tranches de 90 appels max, se ré-enfile pour le reste, relance en cas d'échec et écrit les traces dans `ContactSyncLog__c` |
 | `classes/ContactSyncClient` | Client HTTP : découpe en lots, appelle le Named Credential, lève une erreur si l'API ne répond pas 200 |
-| `classes/ContactSyncLogger` | Écrit une ligne dans `ContactSyncLog__c` |
 | `classes/MissionConstants` | Valeurs `active` / `canceled`, pour éviter les chaînes écrites en dur |
 | `classes/AccountTriggerTest` | Tests de bout en bout (200 comptes, 201 comptes, compte sans contact, compte déjà annulé) |
 | `classes/ContactSyncClientTest` | Tests du client HTTP (lots, Named Credential, erreurs, configuration invalide) |
@@ -148,7 +147,7 @@ Résultat attendu : 13 tests, tous réussis.
 | --- | --- |
 | `AccountTriggerTest` | 200 comptes annulés d'un coup : date posée, contacts désactivés, un seul appel API de 200 contacts, contact du compte non annulé intact. 201 comptes : deux appels API (deux lots de trigger). Compte sans contact : pas d'appel API. Compte déjà annulé : ignoré |
 | `ContactSyncClientTest` | 2500 contacts = 3 appels. Appel par le Named Credential, sans header écrit en dur. Liste vide : aucun appel. Code HTTP différent de 200 : erreur. Taille de lot invalide : erreur |
-| `ContactSyncQueueableTest` | 120 appels nécessaires, 90 envoyés, 30 rendus pour le job suivant (sans doublon ni oubli). Sous la limite : tout part en une fois. Un job réussi écrit une trace `SUCCESS`. Le logger enregistre les détails d'un échec |
+| `ContactSyncQueueableTest` | 120 appels nécessaires, 90 envoyés, 30 rendus pour le job suivant (sans doublon ni oubli). Sous la limite : tout part en une fois. Un job réussi écrit une trace `SUCCESS`. La trace enregistre les détails d'un échec |
 
 ## 8. Suivre les synchronisations
 
@@ -174,7 +173,7 @@ ORDER BY CreatedDate DESC
 
 - Les 13 tests passent dans une Developer Edition.
 - Un appel réel à l'API via le Named Credential `ContactSyncApi` a renvoyé `200 OK` (vérifié dans la Developer Console : le log d'exécution montre `Named Credential ContactSyncApi, Status Code=200`).
-- **Non vérifié** : le chemin d'échec complet (relance automatique puis `FAILED`). Un test Apex ne peut pas enchaîner plusieurs jobs, donc seuls le logger, le découpage et le succès sont testés.
+- **Non vérifié** : le chemin d'échec complet (relance automatique puis `FAILED`). Un test Apex ne peut pas enchaîner plusieurs jobs, donc seuls l'écriture des traces, le découpage et le succès sont testés.
 - **Non vérifié** : la règle multi-entreprises avec `AccountContactRelation` (voir section 2).
 
 ## 10. Limites et pistes d'amélioration

@@ -9,7 +9,7 @@
  * MAX_CALLOUTS_PER_JOB appels, puis se ré-enfile pour le reste des contacts (chaînage).
  *
  * Fiabilité : si l'API échoue, le job est relancé (MAX_ATTEMPTS fois, avec une minute d'attente).
- * Chaque issue est tracée dans ContactSyncLog__c via ContactSyncLogger.
+ * Chaque issue est tracée dans ContactSyncLog__c (méthode log).
  * Relancer un envoi est sans danger : l'API fixe un statut, elle ne l'incrémente pas.
  */
 public with sharing class ContactSyncQueueable implements Queueable, Database.AllowsCallouts {
@@ -20,6 +20,13 @@ public with sharing class ContactSyncQueueable implements Queueable, Database.Al
     @TestVisible private static final Integer MAX_ATTEMPTS = 3;
     // Attente avant une nouvelle tentative, pour laisser l'API se rétablir.
     private static final Integer RETRY_DELAY_MINUTES = 1;
+
+    // Valeurs de ContactSyncLog__c.Status__c.
+    @TestVisible private static final String SUCCESS = 'SUCCESS';
+    // Échec, mais une nouvelle tentative est planifiée.
+    @TestVisible private static final String RETRY = 'RETRY';
+    // Échec définitif : toutes les tentatives sont épuisées, une intervention est nécessaire.
+    @TestVisible private static final String FAILED = 'FAILED';
 
     // On ne garde que ce que l'API attend (Id + statut), pas les contacts entiers.
     private final List<ContactSyncClient.ContactStatus> statuses;
@@ -43,7 +50,7 @@ public with sharing class ContactSyncQueueable implements Queueable, Database.Al
 
         List<ContactSyncClient.ContactStatus> remaining = sendWithinLimits(statuses);
         // Les callouts sont terminés : on peut maintenant écrire en base (DML après callout autorisé).
-        ContactSyncLogger.log(ContactSyncLogger.SUCCESS, statuses.size() - remaining.size(), attempt, null);
+        log(SUCCESS, statuses.size() - remaining.size(), attempt, null);
 
         // Il reste des contacts : un nouveau job prend la suite (nouvelle transaction, nouveaux quotas).
         if (!remaining.isEmpty()) {
@@ -65,6 +72,23 @@ public with sharing class ContactSyncQueueable implements Queueable, Database.Al
             remaining.add(statuses[i]);
         }
         return remaining;
+    }
+
+    /**
+     * Enregistre une ligne dans ContactSyncLog__c, consultable dans Salesforce (contrairement à
+     * System.debug, la trace est conservée).
+     * Database.insert(..., false) : un problème d'écriture du log ne doit jamais faire
+     * échouer ou masquer la synchronisation elle-même.
+     */
+    @TestVisible
+    private static void log(String status, Integer contactCount, Integer attempt, String errorMessage) {
+        Database.insert(new ContactSyncLog__c(
+            Status__c = status,
+            ContactCount__c = contactCount,
+            Attempt__c = attempt,
+            // Le champ est limité à 5000 caractères.
+            ErrorMessage__c = errorMessage == null ? null : errorMessage.abbreviate(5000)
+        ), false);
     }
 
     private static List<ContactSyncClient.ContactStatus> toStatuses(List<Contact> contacts) {
@@ -96,13 +120,13 @@ public with sharing class ContactSyncQueueable implements Queueable, Database.Al
             String error = ctx.getException().getMessage();
 
             if (attempt < MAX_ATTEMPTS) {
-                ContactSyncLogger.log(ContactSyncLogger.RETRY, statuses.size(), attempt, error);
+                log(RETRY, statuses.size(), attempt, error);
                 // Nouvelle tentative avec les mêmes contacts, après une minute d'attente.
                 AsyncOptions options = new AsyncOptions();
                 options.MinimumQueueableDelayInMinutes = RETRY_DELAY_MINUTES;
                 System.enqueueJob(new ContactSyncQueueable(statuses, attempt + 1), options);
             } else {
-                ContactSyncLogger.log(ContactSyncLogger.FAILED, statuses.size(), attempt, error);
+                log(FAILED, statuses.size(), attempt, error);
             }
         }
     }
