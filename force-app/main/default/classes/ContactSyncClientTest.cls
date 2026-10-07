@@ -1,6 +1,8 @@
+/** Tests du client HTTP seul (découpage en lots, Named Credential, gestion des erreurs). */
 @IsTest
 private class ContactSyncClientTest {
 
+    /** Fabrique "count" statuts fictifs, avec des Id de 15 caractères comme les vrais. */
     private static List<ContactSyncClient.ContactStatus> buildStatuses(Integer count) {
         List<ContactSyncClient.ContactStatus> statuses = new List<ContactSyncClient.ContactStatus>();
         for (Integer i = 0; i < count; i++) {
@@ -9,6 +11,7 @@ private class ContactSyncClientTest {
         return statuses;
     }
 
+    // Au-delà de la taille de lot, l'envoi est découpé en plusieurs appels.
     @IsTest
     static void largePayload_isSplitInChunks() {
         Test.setMock(HttpCalloutMock.class, new ContactSyncMock(200, 1000));
@@ -19,6 +22,7 @@ private class ContactSyncClientTest {
         Assert.areEqual('PATCH', ContactSyncMock.lastMethod);
     }
 
+    // L'URL et le token viennent du Named Credential : le code n'envoie pas d'Authorization lui-même.
     @IsTest
     static void callout_usesNamedCredential_andNoSecretInCode() {
         Test.setMock(HttpCalloutMock.class, new ContactSyncMock(200));
@@ -30,6 +34,7 @@ private class ContactSyncClientTest {
             'Le header Authorization est ajouté par le Named Credential, pas par le code');
     }
 
+    // Rien à synchroniser : aucun appel inutile (l'API renverrait une erreur).
     @IsTest
     static void emptyPayload_doesNotCallApi() {
         Test.setMock(HttpCalloutMock.class, new ContactSyncMock(200));
@@ -39,6 +44,7 @@ private class ContactSyncClientTest {
         Assert.areEqual(0, ContactSyncMock.callCount);
     }
 
+    // Tout code différent de 200 doit remonter une erreur claire, contenant le code reçu.
     @IsTest
     static void apiError_throwsSyncException() {
         Test.setMock(HttpCalloutMock.class, new ContactSyncMock(400));
@@ -51,6 +57,7 @@ private class ContactSyncClientTest {
         }
     }
 
+    // Une taille de lot de 0 provoquerait une boucle infinie : la configuration est validée avant.
     @IsTest
     static void invalidChunkSize_throwsSyncException() {
         Test.setMock(HttpCalloutMock.class, new ContactSyncMock(200, 0));
